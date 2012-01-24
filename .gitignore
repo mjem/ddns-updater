@@ -1,2 +1,7 @@
 statefile
 setup.sh
+my-ddns-console.conf
+my-ddns-logfile.conf
+dist
+env
+ddns_updater.egg-info

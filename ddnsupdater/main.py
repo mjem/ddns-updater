@@ -8,10 +8,11 @@ import urllib2
 import logging
 import argparse
 import functools
+import ConfigParser
+import xml.etree.ElementTree
 
-from lxml import etree
-
-from ddns.log import init_log
+from ddnsupdater.log import init_log
+from ddnsupdater import __version__
 
 
 def get_ip(user, password, url, search, skip, match):
@@ -113,12 +114,17 @@ def get_ip(user, password, url, search, skip, match):
 
 
 def update_ddns(url):
+	"""Ping the supplied URL to update the DDNS entry.
+	Try and parse the result, assuming the remote service is namecheap.com.
+	"""
+
 	response_obj = urllib2.urlopen(url)
 	response = response_obj.read()
 
 	try:
-		root_elem = etree.fromstring(response)
-	except lxml.etree.XMLSyntaxError:
+		root_elem = xml.etree.ElementTree.fromstring(response)
+	# except lxml.etree.XMLSyntaxError:
+	except xml.etree.ElementTree.ParseError:
 		logging.error('Could not decode server response ({code}): {body}'.format(
 				code=response_obj.code,
 				body=response))
@@ -134,12 +140,14 @@ def update_ddns(url):
 	if done_elem is not None:
 		done = done_elem.text.strip()
 	else:
-		done = 'Count not decode done value'
+		done = 'Could not decode done value'
 
 	logging.info('Server response ({code}): errors {err} done {done}'.format(
 			code=response_obj.code,
 			err=err_count,
 			done=done))
+
+	# Sample response:
 
 	# <?xml version="1.0"?>
 	# <interface-response>
@@ -172,12 +180,11 @@ def poll(input_function, period, output_url, statefile):
 		if not os.path.exists(statefile):
 			logging.info('Statefile ' + statefile + ' not found, will be created')
 		else:
+			logging.info('Reading statefile ' + statefile)
 			with open(statefile, 'r') as h:
 				last_ip = h.read().strip()
 
-			logging.info('Read external address of {ip} from {statefile}'.format(
-					ip=last_ip,
-					statefile=statefile))
+			logging.info('Read external address of {ip}'.format(ip=last_ip))
 
 	while True:
 		# logging.debug('calling ' + str(input_function))
@@ -198,48 +205,132 @@ def poll(input_function, period, output_url, statefile):
 		logging.debug('Sleeping for {period} seconds'.format(period=period))
 		time.sleep(period)
 
+def configure_defaults_from_file(config_file, defaults):
+	"""Read a set of values from `config_file` and assign them to the `defaults`
+	dictionary.
+	"""
+
+	config = ConfigParser.ConfigParser()
+
+	if not os.path.exists(config_file):
+		raise IOError('Configuration file {name} cannot be read'.format(
+				name=config_file))
+
+	config.read(config_file)
+
+	if config.has_option('ddnsupdater', 'sleep'):
+		defaults['sleep'] = config.getint('ddnsupdater', 'sleep')
+
+	if config.has_option('ddnsupdater', 'logging'):
+		# set log config file name relative to config file name
+		defaults['logging'] = os.path.join(
+			os.path.dirname(os.path.abspath(config_file)),
+							 config.get('ddnsupdater', 'logging'))
+
+	if config.has_option('ddnsupdater', 'statefile'):
+		defaults['statefile'] = config.get('ddnsupdater', 'statefile')
+
+	if config.has_option('fetch', 'url'):
+		defaults['fetch_url'] = config.get('fetch', 'url')
+
+	if config.has_option('fetch', 'user'):
+		defaults['fetch_user'] = config.get('fetch', 'user')
+
+	if config.has_option('fetch', 'password'):
+		defaults['fetch_password'] = config.get('fetch', 'password')
+
+	if config.has_option('fetch', 'search'):
+		defaults['fetch_search'] = config.get('fetch', 'search')
+
+	if config.has_option('fetch', 'skip'):
+		defaults['fetch_skip'] = config.getint('fetch', 'skip')
+
+	if config.has_option('fetch', 'match'):
+		defaults['fetch_match'] = config.get('fetch', 'match')
+
+	if config.has_option('push', 'url'):
+		defaults['push_url'] = config.get('push', 'url')
+
+
 def main():
-	init_log()
-	parser = argparse.ArgumentParser()
-	parser.add_argument('-v')
-	parser.add_argument('--config',
+	# parser = argparse.ArgumentParser()
+	parser = argparse.ArgumentParser(
+		prog='ddns-updater',
+		version=__version__,
+		description=('Continually update a Dynamic DNS server to the current external IP address '
+					 'read from a router.'),
+		add_help=False)
+	parser.add_argument('--config', '--conf', '-c',
 						metavar='FILE',
-						help='Read default values from FILE')
+						help='Read configuration from FILE')
+	args, remaining_argv = parser.parse_known_args()
+	defaults = {
+		'sleep': 3600,
+		'fetch_user': 'admin',
+		'fetch_search': 'IP Address',
+		'fetch_skip': 0,
+		'fetch_match': r'.*<td>([0-9.]+)',
+		'push_url': ('https://dynamicdns.park-your-domain.com/update?'
+					 'host=www&'
+					 'domain=example.com&'
+					 'password=12345&'
+					 'ip={ip}'),
+		}
+
+	if args.config is not None:
+		# If the user supplied a --config file, parse it and add the contents to our
+		# defaults dictionary.
+		# Settings can then be overridden with command line flags.
+		configure_defaults_from_file(args.config, defaults)
+
+	parser.set_defaults(**defaults)
+	parser.add_argument('--help', '-h',
+						action='store_true',
+						help='show this help message and exit')
+	parser.add_argument('--logging',
+						metavar='FILE',
+						help='Configure logging using FILE')
 	parser.add_argument('--statefile',
 						help=('Optional statefile used to record external IP between invocations '
-							  'to reconfiguring the dynamic DNS server on every startup'))
-	parser.add_argument('--fetch-user',
-						default='admin',
-						help='HTTP username to use for request')
-	parser.add_argument('--fetch-password',
-						default='extropia',
-						help='HTTP password to use for request')
-	parser.add_argument('--fetch-url',
-						default='http://192.168.0.1/s_internet.htm')
-	parser.add_argument('--fetch-search',
-						default='IP Address')
-	parser.add_argument('--fetch-skip',
-						default=1)
-	parser.add_argument('--fetch-match',
-						default=r'.*<td>([0-9.]+)')
+							  'to avoid reconfiguring the dynamic DNS server on every startup'))
 	parser.add_argument('--sleep',
 						type=int,
-						default=3600,
 						help='Time between external IP address polls in seconds')
+	parser.add_argument('--fetch-user',
+						help='HTTP username to use for request')
+	parser.add_argument('--fetch-password',
+						help='HTTP password to use for request')
+	parser.add_argument('--fetch-url',
+						help='Router URL containing external IP address')
+	parser.add_argument('--fetch-search',
+						metavar='SEARCH',
+						help=('Search string to look for to identify line containing '
+							  'external IP address'))
+	parser.add_argument('--fetch-skip',
+						metavar='COUNT',
+						help='Skip forwards COUNT lines from line containing MATCH')
+	parser.add_argument('--fetch-match',
+						help='Regular expression including one group to pick out IP address')
 	parser.add_argument('--one-shot',
 						action='store_true',
 						help='Test configuration by just retrieving IP address')
 	parser.add_argument('--push-url',
-						default=('https://dynamicdns.park-your-domain.com/update?'
-								 'host=www&'
-								 'domain=diepunyhumans.org&'
-								 'password=f128a6434f224d7bab3b71995228bbd3&'
-								 'ip={ip}'),
 						help=('Target IP address to ping to update IP address. '
 							  'Use {ip} as placeholder for actual address'))
 
 	args = parser.parse_args()
 
+	if args.help:
+		parser.print_help()
+		parser.exit()
+
+	init_log(args.logging)
+
+	if args.fetch_url is None:
+		parser.error('No URL configured to fetch external IP address. Use --fetch-url or '
+					 'the config file setting to specify a URL')
+
+	# Create a curried version of `get_ip()` with all parameters fixed
 	fetch_function = functools.partial(get_ip,
 									   user=args.fetch_user,
 									   password=args.fetch_password,
@@ -248,13 +339,13 @@ def main():
 									   skip=args.fetch_skip,
 									   match=args.fetch_match)
 
-	if args.sleep is not None:
-		poll(input_function=fetch_function,
-			 period=args.sleep,
-			 output_url=args.push_url,
-			 statefile=args.statefile)
+	if args.one_shot:
+		print fetch_function()
 
-	print fetch_function()
+	poll(input_function=fetch_function,
+		 period=args.sleep,
+		 output_url=args.push_url,
+		 statefile=args.statefile)
 
 if __name__ == '__main__':
 	main()

@@ -2,10 +2,11 @@
 
 """Initialise Python standard library logging module"""
 
+import os
 import logging
 import logging.config
 
-LOGGING = {
+CONSOLE_LOGGING = {
 	'version': 1,
 		'disable_existing_loggers': True,
 		'formatters': {
@@ -27,12 +28,20 @@ LOGGING = {
 		}
 
 
-def init_log(filename=None):
+def init_log(config_filename=None):
 	"""Initialise log file"""
-	if filename is not None:
-		LOGGING['handlers']['file'] = {'class': 'logging.FileHandler',
-									   'filename': filename,
-									   'formatter': 'normal'}
-		LOGGING['root']['handlers'] = ['file']
+	if config_filename is None:
+		logging.config.dictConfig(CONSOLE_LOGGING)
 
-	logging.config.dictConfig(LOGGING)
+	else:
+		if not os.path.exists(config_filename):
+			raise IOError('Log config file {name} cannot be read'.format(
+					name=config_filename))
+
+		logging.config.fileConfig(config_filename)
+
+		# LOGGING['handlers']['file'] = {'class': 'logging.FileHandler',
+									   # 'filename': filename,
+									   # 'formatter': 'normal'}
+		# LOGGING['root']['handlers'] = ['file']
+
